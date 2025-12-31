@@ -1,0 +1,209 @@
+package srvconn
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	authorizationv1 "k8s.io/api/authorization/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/jumpserver/koko/pkg/config"
+	"github.com/jumpserver/koko/pkg/localcommand"
+	"github.com/jumpserver/koko/pkg/logger"
+	"github.com/jumpserver/koko/pkg/utils"
+)
+
+var (
+	ErrValidToken = errors.New("invalid token")
+
+	_ ServerConnection = (*K8sCon)(nil)
+)
+
+const (
+	k8sInitFilename = "init-kubectl.sh"
+)
+
+// 类似于 `kubectl --insecure-skip-tls-verify=%s --token=%s --server=%s auth can-i get pods`
+
+func IsValidK8sUserToken(k8sCfg *rest.Config) bool {
+	client, err := kubernetes.NewForConfig(k8sCfg)
+	if err != nil {
+		logger.Errorf("K8sCon new config err: %s", err)
+		return false
+	}
+	sar := &authorizationv1.SelfSubjectAccessReview{
+		Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+			ResourceAttributes: &authorizationv1.ResourceAttributes{
+				Verb:     "get",
+				Resource: "pods",
+			},
+		},
+	}
+	authClient := client.AuthorizationV1()
+	resp, err2 := authClient.SelfSubjectAccessReviews().Create(context.TODO(), sar, metav1.CreateOptions{})
+	if err2 != nil {
+		logger.Errorf("K8sCon check token pods auth err: %s", err2)
+		return false
+	}
+	logger.Debugf("K8sCon check token pods auth resp: %+v", resp)
+	return true
+}
+
+func NewK8sConnection(ops ...K8sOption) (*K8sCon, error) {
+	args := &k8sOptions{
+		Username:      os.Getenv("USER"),
+		ClusterServer: "https://127.0.0.1:8443",
+		Token:         "",
+		IsSkipTls:     true,
+		ExtraEnv:      map[string]string{},
+	}
+	for _, setter := range ops {
+		setter(args)
+	}
+
+	k8sCfg := args.K8sCfg()
+	if !IsValidK8sUserToken(k8sCfg) {
+		return nil, ErrValidToken
+	}
+	kubeProxy := NewKubectlProxyConn(args)
+	err := kubeProxy.Start()
+	if err != nil {
+		logger.Errorf("K8sCon start proxy err: %s", err)
+		return nil, fmt.Errorf("K8sCon start proxy err: %w", err)
+	}
+
+	envs := kubeProxy.Env()
+	lcmd, err := startK8SLocalCommand(envs)
+	if err != nil {
+		logger.Errorf("K8sCon start local pty err: %s", err)
+		return nil, fmt.Errorf("K8sCon start local pty err: %w", err)
+	}
+	err = lcmd.SetWinSize(args.win.Width, args.win.Height)
+	if err != nil {
+		_ = lcmd.Close()
+		return nil, err
+	}
+	return &K8sCon{options: args, LocalCommand: lcmd, proxy: kubeProxy}, nil
+}
+
+type K8sCon struct {
+	proxy   *KubectlProxyConn
+	options *k8sOptions
+	*localcommand.LocalCommand
+}
+
+func (k *K8sCon) KeepAlive() error {
+	return nil
+}
+
+func (k *K8sCon) Close() error {
+	_ = k.LocalCommand.Close()
+	return k.proxy.Close()
+}
+
+type k8sOptions struct {
+	ClusterServer string // https://172.16.10.51:8443
+	Username      string // user 系统用户名
+	Token         string // 授权token
+	IsSkipTls     bool
+	ExtraEnv      map[string]string
+	DEBUG         bool
+
+	win Windows
+}
+
+func (o *k8sOptions) K8sCfg() *rest.Config {
+	kubeConf := &rest.Config{
+		Host:        o.ClusterServer,
+		BearerToken: o.Token,
+	}
+	if o.IsSkipTls {
+		kubeConf.Insecure = true
+	}
+	return kubeConf
+}
+
+func (o *k8sOptions) Env() []string {
+	token, err := utils.Encrypt(o.Token, config.CipherKey)
+	if err != nil {
+		logger.Errorf("Encrypt k8s token err: %s", err)
+		token = o.Token
+	}
+	skipTls := "true"
+	if !o.IsSkipTls {
+		skipTls = "false"
+	}
+	k8sName := strings.Trim(strconv.Quote(o.ExtraEnv["K8sName"]), "\"")
+	k8sName = strings.ReplaceAll(k8sName, "`", "\\`")
+	return []string{
+		fmt.Sprintf("KUBECTL_USER=%s", o.Username),
+		fmt.Sprintf("KUBECTL_CLUSTER=%s", o.ClusterServer),
+		fmt.Sprintf("KUBECTL_INSECURE_SKIP_TLS_VERIFY=%s", skipTls),
+		fmt.Sprintf("K8S_ENCRYPTED_TOKEN=%s", token),
+		fmt.Sprintf("WELCOME_BANNER=%s", config.KubectlBanner),
+		fmt.Sprintf("K8S_NAME=%s", k8sName),
+	}
+}
+
+func startK8SLocalCommand(env []string) (*localcommand.LocalCommand, error) {
+	pwd, _ := os.Getwd()
+	shPath := filepath.Join(pwd, k8sInitFilename)
+	argv := []string{
+		"--fork",
+		"--pid",
+		"--mount-proc",
+		shPath,
+	}
+	return localcommand.New("unshare", argv, localcommand.WithEnv(env))
+}
+
+type K8sOption func(*k8sOptions)
+
+func K8sUsername(username string) K8sOption {
+	return func(args *k8sOptions) {
+		args.Username = username
+	}
+}
+
+func K8sToken(token string) K8sOption {
+	return func(args *k8sOptions) {
+		args.Token = token
+	}
+}
+
+func K8sClusterServer(clusterServer string) K8sOption {
+	return func(args *k8sOptions) {
+		args.ClusterServer = clusterServer
+	}
+}
+
+func K8sExtraEnvs(envs map[string]string) K8sOption {
+	return func(args *k8sOptions) {
+		args.ExtraEnv = envs
+	}
+}
+
+func K8sSkipTls(isSkipTls bool) K8sOption {
+	return func(args *k8sOptions) {
+		args.IsSkipTls = isSkipTls
+	}
+}
+
+func K8sPtyWin(win Windows) K8sOption {
+	return func(args *k8sOptions) {
+		args.win = win
+	}
+}
+
+func K8sDebug(debug bool) K8sOption {
+	return func(args *k8sOptions) {
+		args.DEBUG = debug
+	}
+}

@@ -1,0 +1,97 @@
+package session
+
+import (
+	"sync"
+)
+
+var (
+	sessManager = newSessionManager()
+)
+
+func GetSessionById(id string) (s *Session, ok bool) {
+	s, ok = sessManager.Get(id)
+	return
+}
+
+func GetAliveSessionIds() []string {
+	return sessManager.Range()
+}
+
+func GetAliveSessionTokenIds() []string {
+	return sessManager.RangeToken()
+}
+
+func GetSessions() []*Session {
+	return sessManager.GetSessions()
+}
+
+func AddSession(s *Session) {
+	sessManager.Add(s.ID, s)
+}
+
+func RemoveSession(s *Session) {
+	sessManager.Delete(s.ID)
+}
+
+func RemoveSessionById(id string) {
+	sessManager.Delete(id)
+}
+
+func newSessionManager() *sessionManager {
+	return &sessionManager{
+		data: make(map[string]*Session),
+	}
+}
+
+type sessionManager struct {
+	data map[string]*Session
+	sync.Mutex
+}
+
+func (s *sessionManager) Add(id string, sess *Session) {
+	s.Lock()
+	defer s.Unlock()
+	s.data[id] = sess
+}
+func (s *sessionManager) Get(id string) (sess *Session, ok bool) {
+	s.Lock()
+	defer s.Unlock()
+	sess, ok = s.data[id]
+	return
+}
+
+func (s *sessionManager) Delete(id string) {
+	s.Lock()
+	defer s.Unlock()
+	delete(s.data, id)
+}
+
+func (s *sessionManager) Range() []string {
+	s.Lock()
+	defer s.Unlock()
+	sids := make([]string, 0, len(s.data))
+	for sid := range s.data {
+		sids = append(sids, sid)
+	}
+
+	return sids
+}
+
+func (s *sessionManager) RangeToken() []string {
+	s.Lock()
+	defer s.Unlock()
+	tIds := make([]string, 0, len(s.data))
+	for _, session := range s.data {
+		tIds = append(tIds, session.TokenId)
+	}
+
+	return tIds
+}
+
+func (s *sessionManager) GetSessions() []*Session {
+	sessions := make([]*Session, 0, len(s.data))
+	for _, sess := range s.data {
+		sessions = append(sessions, sess)
+	}
+	return sessions
+}
