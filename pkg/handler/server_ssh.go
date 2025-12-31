@@ -32,6 +32,53 @@ import (
 
 const ctxID = "ctxID"
 
+// isForbiddenPortForwarding 检查是否禁止转发到指定地址
+func isForbiddenPortForwarding(destAddr string, asset *model.PermAsset) (bool, string) {
+	_, portStr, err := net.SplitHostPort(destAddr)
+	if err != nil {
+		return false, ""
+	}
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return false, ""
+	}
+	destPort := uint32(port)
+
+	// 禁止转发到资产的 SSH 端口（防止绕过审计）
+	if asset.IsSupportProtocol(model.ProtocolSSH) {
+		sshPort := asset.ProtocolPort(model.ProtocolSSH)
+		if destPort == uint32(sshPort) {
+			return true, fmt.Sprintf("SSH (port %d)", sshPort)
+		}
+	}
+
+	// 禁止转发到资产的 Telnet 端口
+	if asset.IsSupportProtocol(model.ProtocolTELNET) {
+		telnetPort := asset.ProtocolPort(model.ProtocolTELNET)
+		if destPort == uint32(telnetPort) {
+			return true, fmt.Sprintf("Telnet (port %d)", telnetPort)
+		}
+	}
+
+	// 禁止转发到资产的 RDP 端口
+	if asset.IsSupportProtocol(model.ProtocolRDP) {
+		rdpPort := asset.ProtocolPort(model.ProtocolRDP)
+		if destPort == uint32(rdpPort) {
+			return true, fmt.Sprintf("RDP (port %d)", rdpPort)
+		}
+	}
+
+	// 禁止转发到资产的 VNC 端口
+	if asset.IsSupportProtocol(model.ProtocolVNC) {
+		vncPort := asset.ProtocolPort(model.ProtocolVNC)
+		if destPort == uint32(vncPort) {
+			return true, fmt.Sprintf("VNC (port %d)", vncPort)
+		}
+	}
+
+	return false, ""
+}
+
 func (s *Server) PasswordAuth(ctx ssh.Context, password string) error {
 	ctx.SetValue(ctxID, ctx.SessionID())
 	tConfig := s.GetTerminalConfig()
@@ -191,15 +238,12 @@ func (s *Server) handleNormalPortForwarding(ctx ssh.Context, newChan gossh.NewCh
 	// 获取 token 信息
 	var tokenInfo *model.ConnectToken
 	if directRequest.IsToken() {
-		var err error
-		tokenInfo, err = s.jmsService.GetConnectTokenInfo(directRequest.TokenId)
-		if err != nil {
-			logger.Errorf("handleNormalPortForwarding: get token info failed: %s", err)
-			_ = newChan.Reject(gossh.Prohibited, "invalid token")
-			return
-		}
+		// 已经有 token 信息，直接使用
+		tokenInfo = directRequest.ConnectToken
 	} else {
-		tokenInfo, err := s.buildConnectToken(ctx, user, directRequest)
+		// 需要构建 token
+		var err error
+		tokenInfo, err = s.buildConnectToken(ctx, user, directRequest)
 		if err != nil {
 			logger.Errorf("handleNormalPortForwarding: cannot build connect token: %s", err)
 			_ = newChan.Reject(gossh.Prohibited, "cannot build connection token")
@@ -213,6 +257,13 @@ func (s *Server) handleNormalPortForwarding(ctx ssh.Context, newChan gossh.NewCh
 	if !matchedProtocol || !assetSupportedSSH {
 		logger.Errorf("handleNormalPortForwarding: not ssh asset connection token")
 		_ = newChan.Reject(gossh.Prohibited, "only SSH protocol supported for port forwarding")
+		return
+	}
+
+	// 检查目标端口是否禁止转发（基于资产配置的实际端口）
+	if forbidden, protocol := isForbiddenPortForwarding(destAddr, &tokenInfo.Asset); forbidden {
+		logger.Errorf("handleNormalPortForwarding: forbidden port forwarding to %s (%s protocol)", destAddr, protocol)
+		_ = newChan.Reject(gossh.Prohibited, fmt.Sprintf("port forwarding to %s is forbidden for security reasons", protocol))
 		return
 	}
 
