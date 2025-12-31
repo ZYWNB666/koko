@@ -33,7 +33,8 @@ import (
 const ctxID = "ctxID"
 
 // isForbiddenPortForwarding 检查是否禁止转发到指定地址
-func isForbiddenPortForwarding(destAddr string, asset *model.PermAsset) (bool, string) {
+// 主要防止用户通过端口转发绕过审计直接访问 SSH/Telnet 等管理端口
+func isForbiddenPortForwarding(destAddr string, tokenInfo *model.ConnectToken) (bool, string) {
 	_, portStr, err := net.SplitHostPort(destAddr)
 	if err != nil {
 		return false, ""
@@ -45,34 +46,10 @@ func isForbiddenPortForwarding(destAddr string, asset *model.PermAsset) (bool, s
 	destPort := uint32(port)
 
 	// 禁止转发到资产的 SSH 端口（防止绕过审计）
-	if asset.IsSupportProtocol(model.ProtocolSSH) {
-		sshPort := asset.ProtocolPort(model.ProtocolSSH)
+	if tokenInfo.Asset.IsSupportProtocol(model.ProtocolSSH) {
+		sshPort := tokenInfo.Asset.ProtocolPort(model.ProtocolSSH)
 		if destPort == uint32(sshPort) {
 			return true, fmt.Sprintf("SSH (port %d)", sshPort)
-		}
-	}
-
-	// 禁止转发到资产的 Telnet 端口
-	if asset.IsSupportProtocol(model.ProtocolTELNET) {
-		telnetPort := asset.ProtocolPort(model.ProtocolTELNET)
-		if destPort == uint32(telnetPort) {
-			return true, fmt.Sprintf("Telnet (port %d)", telnetPort)
-		}
-	}
-
-	// 禁止转发到资产的 RDP 端口
-	if asset.IsSupportProtocol(model.ProtocolRDP) {
-		rdpPort := asset.ProtocolPort(model.ProtocolRDP)
-		if destPort == uint32(rdpPort) {
-			return true, fmt.Sprintf("RDP (port %d)", rdpPort)
-		}
-	}
-
-	// 禁止转发到资产的 VNC 端口
-	if asset.IsSupportProtocol(model.ProtocolVNC) {
-		vncPort := asset.ProtocolPort(model.ProtocolVNC)
-		if destPort == uint32(vncPort) {
-			return true, fmt.Sprintf("VNC (port %d)", vncPort)
 		}
 	}
 
@@ -261,7 +238,7 @@ func (s *Server) handleNormalPortForwarding(ctx ssh.Context, newChan gossh.NewCh
 	}
 
 	// 检查目标端口是否禁止转发（基于资产配置的实际端口）
-	if forbidden, protocol := isForbiddenPortForwarding(destAddr, &tokenInfo.Asset); forbidden {
+	if forbidden, protocol := isForbiddenPortForwarding(destAddr, tokenInfo); forbidden {
 		logger.Errorf("handleNormalPortForwarding: forbidden port forwarding to %s (%s protocol)", destAddr, protocol)
 		_ = newChan.Reject(gossh.Prohibited, fmt.Sprintf("port forwarding to %s is forbidden for security reasons", protocol))
 		return
