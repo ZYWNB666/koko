@@ -10,7 +10,7 @@ on:
       PLATFORMS:
         description: 'platforms'
         type: string
-        default: 'linux/amd64,linux/arm64'
+        default: 'linux/amd64'
 
 jobs:
   build-and-push:
