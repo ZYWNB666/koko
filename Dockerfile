@@ -8,7 +8,7 @@ ARG VERSION
 ENV VERSION=$VERSION
 
 WORKDIR /opt/koko/ui
-RUN yarn build
+RUN VITE_PUBLIC_PATH=/koko NODE_ENV=production yarn build
 
 WORKDIR /opt/koko
 RUN make build -s \

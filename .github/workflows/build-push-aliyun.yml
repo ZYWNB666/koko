@@ -29,7 +29,7 @@ jobs:
       - name: Generate image tag
         id: tag
         run: |
-          TAG="v4.10.13-$(date +'%Y%m%d-%H%M%S')"
+          TAG="v4.10.13-koko-$(date +'%Y%m%d-%H%M%S')"
           echo "IMAGE_TAG=${TAG}" >> $GITHUB_ENV
           echo "Generated tag: ${TAG}"
 
