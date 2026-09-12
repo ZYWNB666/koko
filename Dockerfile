@@ -34,8 +34,11 @@ LABEL org.opencontainers.image.description="JumpServer Koko"
 
 ARG DEPENDENCIES="                    \
         bash-completion               \
+        curl                          \
+        iproute2                      \
         jq                            \
         less                          \
+        procps                        \
         redis-tools                   \
         ca-certificates"
 
