@@ -14,6 +14,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/jumpserver-dev/sdk-go/service"
+	"github.com/jumpserver/koko/pkg/auth"
 	"github.com/jumpserver/koko/pkg/config"
 	"github.com/jumpserver/koko/pkg/handler"
 	"github.com/jumpserver/koko/pkg/logger"
@@ -105,6 +106,7 @@ func (s *Server) Stop() {
 		logger.Infof(
 			"SSH server draining, waiting up to %d seconds for connections to finish, %d active",
 			drainTimeout, atomic.LoadInt32(&s.connCount))
+		logDrainingConns()
 		stopTicker := make(chan struct{})
 		go func() {
 			ticker := time.NewTicker(drainReportInterval)
@@ -114,6 +116,7 @@ func (s *Server) Stop() {
 				case <-ticker.C:
 					logger.Infof("SSH server draining: %d connections remaining",
 						atomic.LoadInt32(&s.connCount))
+					logDrainingConns()
 				case <-stopTicker:
 					return
 				}
@@ -125,6 +128,7 @@ func (s *Server) Stop() {
 			logger.Errorf(
 				"SSH server drain timeout after %d seconds, %d connections will be closed",
 				drainTimeout, atomic.LoadInt32(&s.connCount))
+			logDrainingConns()
 			return
 		}
 		logger.Infof("SSH server drained, all connections finished")
@@ -133,6 +137,25 @@ func (s *Server) Stop() {
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFunc()
 	logger.Fatal(s.Srv.Shutdown(ctx))
+}
+
+// logDrainingConns: 排水期间逐条打印已认证连接的身份(用户/来源IP/登录时间/
+// 挂了多久), 回答"还挂着的连接是谁的"。conn 前 8 位是 "SSH conn[...]"
+// 日志的前缀, 可 grep 关联完整连接历史。计数(listener 层)含认证中的连接,
+// 逐条明细只列已认证的, 两者差值即认证中/失败的瞬态连接
+func logDrainingConns() {
+	for _, c := range auth.ActiveSSHConns() {
+		logger.Infof("SSH server draining: conn[%s] user=%s from=%s login=%s age=%s",
+			shortSessionID(c.SessionID), c.User, c.RemoteIP,
+			c.LoginAt.Format("15:04:05"), time.Since(c.LoginAt).Round(time.Second))
+	}
+}
+
+func shortSessionID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func NewSSHServer(jmsService *service.JMService) *Server {

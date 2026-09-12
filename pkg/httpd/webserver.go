@@ -83,7 +83,7 @@ func (s *Server) Stop() {
 	drainTimeout := config.GetConf().SSHDrainTimeout
 	if drainTimeout > 0 {
 		// 排水模式: 拒新 ws → 等存量 ws 全部断开或超时 → 最后才关 listener。
-		// 每 2s 轮询计数, 每 30s 打印剩余, 便于观察排空进度
+		// 每 2s 轮询计数, 每 10s 打印剩余(与 sshd 的 drainReportInterval 对齐)
 		atomic.StoreInt32(&s.draining, 1)
 		logger.Infof(
 			"HTTP server draining, waiting up to %d seconds for websocket connections, %d active",
@@ -93,7 +93,7 @@ func (s *Server) Stop() {
 		for atomic.LoadInt32(&s.wsConns) > 0 && time.Now().Before(deadline) {
 			time.Sleep(2 * time.Second)
 			waited += 2
-			if waited%30 == 0 {
+			if waited%10 == 0 {
 				logger.Infof("HTTP server draining: %d websocket connections remaining",
 					atomic.LoadInt32(&s.wsConns))
 			}

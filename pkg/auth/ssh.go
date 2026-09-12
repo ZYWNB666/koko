@@ -42,6 +42,7 @@ func SSHPasswordAndPublicKeyAuth(jmsService *service.JMService) SSHAuthFunc {
 			if req.IsToken() {
 				if req.Authenticate(password) {
 					ctx.SetValue(ContextKeyUser, &req.ConnectToken.User)
+					RegisterSSHConn(ctx, &req.ConnectToken.User, remoteAddr)
 					logger.Infof("SSH conn[%s] %s for %s from %s", ctx.SessionID(),
 						actionAccepted, username, remoteAddr)
 					return nil
@@ -110,6 +111,7 @@ func SSHPasswordAndPublicKeyAuth(jmsService *service.JMService) SSHAuthFunc {
 		switch authStatus {
 		case authSuccess:
 			ctx.SetValue(ContextKeyUser, &user)
+			RegisterSSHConn(ctx, &user, remoteAddr)
 			if conf.ForceMultiAuth && authMethod == "publickey" {
 				res = needPasswordAuthErr
 				ctx.SetValue(ContextKeyCurrentAuth, "password")
