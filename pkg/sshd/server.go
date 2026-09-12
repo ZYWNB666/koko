@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gliderlabs/ssh"
@@ -25,6 +27,9 @@ const (
 	ChannelTCPIPForward       = "tcpip-forward"
 	ChannelCancelTCPIPForward = "cancel-tcpip-forward"
 	ChannelForwardedTCPIP     = "forwarded-tcpip"
+
+	// 排水期间打印剩余连接数的间隔
+	drainReportInterval = 10 * time.Second
 )
 
 var (
@@ -40,6 +45,35 @@ var (
 type Server struct {
 	Srv     *ssh.Server
 	Handler *handler.Server
+	// 活跃 SSH 连接数(含菜单态/认证中的), gliderlabs Shutdown 等的就是
+	// 这个数归零, 排水日志按它展示排空进度
+	connCount int32
+}
+
+// countingListener: listener 层连接计数, 供排水期间打印剩余连接数
+type countingListener struct {
+	net.Listener
+	connCount *int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	atomic.AddInt32(l.connCount, 1)
+	return &countConn{Conn: conn, connCount: l.connCount}, nil
+}
+
+type countConn struct {
+	net.Conn
+	once      sync.Once
+	connCount *int32
+}
+
+func (c *countConn) Close() error {
+	c.once.Do(func() { atomic.AddInt32(c.connCount, -1) })
+	return c.Conn.Close()
 }
 
 func (s *Server) Start() {
@@ -52,7 +86,9 @@ func (s *Server) Start() {
 	// !!! 不能像以前那样 logger.Fatal(Serve(...)): 排水时 Stop() 会先关
 	// listener 拒新连接, Serve 返回 ErrServerClosed 属预期返回; 若在这里
 	// Fatal 会当场退出进程, 排水等待(等存量会话结束)全部作废
-	if err := s.Srv.Serve(proxyListener); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+	if err := s.Srv.Serve(&countingListener{
+		Listener: proxyListener, connCount: &s.connCount,
+	}); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 		logger.Fatal(err)
 	}
 }
@@ -62,16 +98,36 @@ func (s *Server) Stop() {
 	if drainTimeout > 0 {
 		// 排水模式: Shutdown 先关闭 listener(新连接立即被拒), 再等存量
 		// 连接(含资产选择菜单里的)全部自然结束; 超时返回后由进程退出
-		// 强制关闭剩余连接
+		// 强制关闭剩余连接。期间每 10s 打印剩余连接数, 便于观察排空进度
 		ctx, cancelFunc := context.WithTimeout(
 			context.Background(), time.Duration(drainTimeout)*time.Second)
 		defer cancelFunc()
 		logger.Infof(
-			"SSH server draining, waiting up to %d seconds for connections to finish", drainTimeout)
-		if err := s.Srv.Shutdown(ctx); err != nil {
+			"SSH server draining, waiting up to %d seconds for connections to finish, %d active",
+			drainTimeout, atomic.LoadInt32(&s.connCount))
+		stopTicker := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(drainReportInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logger.Infof("SSH server draining: %d connections remaining",
+						atomic.LoadInt32(&s.connCount))
+				case <-stopTicker:
+					return
+				}
+			}
+		}()
+		err := s.Srv.Shutdown(ctx)
+		close(stopTicker)
+		if err != nil {
 			logger.Errorf(
-				"SSH server drain timeout after %d seconds, remaining connections will be closed", drainTimeout)
+				"SSH server drain timeout after %d seconds, %d connections will be closed",
+				drainTimeout, atomic.LoadInt32(&s.connCount))
+			return
 		}
+		logger.Infof("SSH server drained, all connections finished")
 		return
 	}
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
@@ -128,7 +184,7 @@ func NewSSHServer(jmsService *service.JMService) *Server {
 			ChannelCancelTCPIPForward: sshHandler.HandleSSHRequest,
 		},
 	}
-	return &Server{srv, sshHandler}
+	return &Server{Srv: srv, Handler: sshHandler}
 }
 
 type localForwardChannelData struct {

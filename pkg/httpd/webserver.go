@@ -82,18 +82,28 @@ func (s *Server) DrainGuard() gin.HandlerFunc {
 func (s *Server) Stop() {
 	drainTimeout := config.GetConf().SSHDrainTimeout
 	if drainTimeout > 0 {
-		// 排水模式: 拒新 ws → 等存量 ws 全部断开或超时 → 最后才关 listener
+		// 排水模式: 拒新 ws → 等存量 ws 全部断开或超时 → 最后才关 listener。
+		// 每 2s 轮询计数, 每 30s 打印剩余, 便于观察排空进度
 		atomic.StoreInt32(&s.draining, 1)
 		logger.Infof(
-			"HTTP server draining, waiting up to %d seconds for websocket connections", drainTimeout)
+			"HTTP server draining, waiting up to %d seconds for websocket connections, %d active",
+			drainTimeout, atomic.LoadInt32(&s.wsConns))
 		deadline := time.Now().Add(time.Duration(drainTimeout) * time.Second)
+		waited := 0
 		for atomic.LoadInt32(&s.wsConns) > 0 && time.Now().Before(deadline) {
 			time.Sleep(2 * time.Second)
+			waited += 2
+			if waited%30 == 0 {
+				logger.Infof("HTTP server draining: %d websocket connections remaining",
+					atomic.LoadInt32(&s.wsConns))
+			}
 		}
 		if n := atomic.LoadInt32(&s.wsConns); n > 0 {
 			logger.Errorf(
 				"HTTP server drain timeout after %d seconds, %d websocket connections will be closed",
 				drainTimeout, n)
+		} else {
+			logger.Infof("HTTP server drained, all websocket connections finished")
 		}
 		ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelFunc()
