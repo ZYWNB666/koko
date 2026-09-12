@@ -2,6 +2,7 @@ package sshd
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"time"
@@ -48,7 +49,12 @@ func (s *Server) Start() {
 		logger.Fatal(err)
 	}
 	proxyListener := &proxyproto.Listener{Listener: ln}
-	logger.Fatal(s.Srv.Serve(proxyListener))
+	// !!! 不能像以前那样 logger.Fatal(Serve(...)): 排水时 Stop() 会先关
+	// listener 拒新连接, Serve 返回 ErrServerClosed 属预期返回; 若在这里
+	// Fatal 会当场退出进程, 排水等待(等存量会话结束)全部作废
+	if err := s.Srv.Serve(proxyListener); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+		logger.Fatal(err)
+	}
 }
 
 func (s *Server) Stop() {
