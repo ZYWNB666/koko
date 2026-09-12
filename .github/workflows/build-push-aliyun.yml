@@ -53,3 +53,8 @@ jobs:
             registry.cn-shanghai.aliyuncs.com/zywdockers/jmp-core:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Aliyun ACR rejects BuildKit provenance attestation manifests
+          # (denied: unknown manifest class for application/vnd.oci.empty.v1+json)
+          # 同 core 仓库 build-and-push.yml 的处理, 两边保持一致
+          provenance: false
+          sbom: false
