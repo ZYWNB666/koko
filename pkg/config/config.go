@@ -26,6 +26,9 @@ type Config struct {
 	SSHPort            string `mapstructure:"SSHD_PORT"`
 	HTTPPort           string `mapstructure:"HTTPD_PORT"`
 	SSHTimeout         int    `mapstructure:"SSH_TIMEOUT"`
+	// SIGTERM 排水窗口(秒): 拒绝新连接, 等存量会话自然结束后再退出,
+	// 超时则强制结束。0 = 不排水(旧行为, 收到信号 5 秒强退)
+	SSHDrainTimeout    int    `mapstructure:"SSH_DRAIN_TIMEOUT"`
 	HttpRequestTimeout int    `mapstructure:"HTTP_REQUEST_TIMEOUT"`
 
 	LogLevel string `mapstructure:"LOG_LEVEL"`

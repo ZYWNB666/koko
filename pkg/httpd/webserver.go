@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LeeEirc/elfinder"
@@ -48,6 +49,13 @@ type Server struct {
 	broadCaster *broadcaster
 	Srv         *http.Server
 	apiClient   *service.JMService
+
+	// SIGTERM 排水状态: 排水中拒绝新的 ws 连接并等存量结束。
+	// listener 刻意保持打开 —— /koko/health/ 继续返回 200, 避免排水中途
+	// liveness 探针失败被 kubelet 掐死(k8s 在 Pod 删除时本就会把它从
+	// EndpointSlice 摘除, 不依赖这里关 listener 断新流量)
+	draining int32
+	wsConns  int32
 }
 
 func (s *Server) Start() {
@@ -56,7 +64,42 @@ func (s *Server) Start() {
 	log.Print(s.Srv.ListenAndServe())
 }
 
+// DrainGuard 挂在 /koko/ws/ 路由组: 排水中拒新连接(503), 平时对活跃
+// websocket 连接计数, 供 Stop() 等待
+func (s *Server) DrainGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if atomic.LoadInt32(&s.draining) == 1 {
+			c.String(http.StatusServiceUnavailable, "koko is draining")
+			c.Abort()
+			return
+		}
+		atomic.AddInt32(&s.wsConns, 1)
+		defer atomic.AddInt32(&s.wsConns, -1)
+		c.Next()
+	}
+}
+
 func (s *Server) Stop() {
+	drainTimeout := config.GetConf().SSHDrainTimeout
+	if drainTimeout > 0 {
+		// 排水模式: 拒新 ws → 等存量 ws 全部断开或超时 → 最后才关 listener
+		atomic.StoreInt32(&s.draining, 1)
+		logger.Infof(
+			"HTTP server draining, waiting up to %d seconds for websocket connections", drainTimeout)
+		deadline := time.Now().Add(time.Duration(drainTimeout) * time.Second)
+		for atomic.LoadInt32(&s.wsConns) > 0 && time.Now().Before(deadline) {
+			time.Sleep(2 * time.Second)
+		}
+		if n := atomic.LoadInt32(&s.wsConns); n > 0 {
+			logger.Errorf(
+				"HTTP server drain timeout after %d seconds, %d websocket connections will be closed",
+				drainTimeout, n)
+		}
+		ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelFunc()
+		_ = s.Srv.Shutdown(ctx)
+		return
+	}
 	ctx, cancelFunc := context.WithTimeout(context.TODO(), 10*time.Second)
 	defer cancelFunc()
 	if s.Srv != nil {

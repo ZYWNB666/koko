@@ -65,6 +65,8 @@ func createRouter(jmsService *service.JMService, webSrv *Server) *gin.Engine {
 	kokoGroup.StaticFileFS("/favicon.ico", "ui/dist/favicon.ico", http.FS(assets.UIFs))
 	kokoGroup.GET("/health/", webSrv.HealthStatusHandler)
 	wsGroup := kokoGroup.Group("/ws/")
+	// 排水守卫必须在子组创建前挂上(子组继承父组当前的中间件链)
+	wsGroup.Use(webSrv.DrainGuard())
 	{
 		wsGroup.Group("/terminal").Use(
 			auth.HTTPMiddleSessionAuth(jmsService)).GET("/", webSrv.ProcessTerminalWebsocket)

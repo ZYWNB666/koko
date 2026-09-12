@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,8 +30,14 @@ func (k *Koko) Start() {
 }
 
 func (k *Koko) Stop() {
-	k.sshSrv.Stop()
-	k.webSrv.Stop()
+	// SSH(sshd) 与 HTTP(httpd) 两个监听服务并发排水 —— 是单个副本进程内的
+	// 两个 listener, 与 k8s 副本数无关(滚动更新一次只排水一个副本);
+	// 并发使总耗时上限 = SSH_DRAIN_TIMEOUT, 而非两者相加
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); k.sshSrv.Stop() }()
+	go func() { defer wg.Done(); k.webSrv.Stop() }()
+	wg.Wait()
 	logger.Info("Quit The KoKo")
 }
 

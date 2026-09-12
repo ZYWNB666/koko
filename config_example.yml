@@ -23,6 +23,13 @@ BOOTSTRAP_TOKEN: <PleasgeChangeSameWithJumpserver>
 # SSH连接超时时间 (default 15 seconds)
 # SSH_TIMEOUT: 15
 
+# 收到 SIGTERM(k8s 删除 Pod 等)后的排水窗口, 单位秒, 默认 0:
+#   >0: 立即拒新连接(HTTP listener 保持打开供健康检查), 等存量会话
+#       (SSH 直连/Web 终端 ws)自然结束后再退出, 超时则强制结束;
+#   0 : 不排水, 收到信号 5 秒后强退(旧行为)。
+# k8s 部署时 Pod 的 terminationGracePeriodSeconds 需大于此值
+# SSH_DRAIN_TIMEOUT: 1800
+
 # Api Http请求的超时时间 (default 30 seconds)
 # HTTP_REQUEST_TIMEOUT: 30
 

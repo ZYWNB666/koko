@@ -52,6 +52,22 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Stop() {
+	drainTimeout := config.GetConf().SSHDrainTimeout
+	if drainTimeout > 0 {
+		// 排水模式: Shutdown 先关闭 listener(新连接立即被拒), 再等存量
+		// 连接(含资产选择菜单里的)全部自然结束; 超时返回后由进程退出
+		// 强制关闭剩余连接
+		ctx, cancelFunc := context.WithTimeout(
+			context.Background(), time.Duration(drainTimeout)*time.Second)
+		defer cancelFunc()
+		logger.Infof(
+			"SSH server draining, waiting up to %d seconds for connections to finish", drainTimeout)
+		if err := s.Srv.Shutdown(ctx); err != nil {
+			logger.Errorf(
+				"SSH server drain timeout after %d seconds, remaining connections will be closed", drainTimeout)
+		}
+		return
+	}
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFunc()
 	logger.Fatal(s.Srv.Shutdown(ctx))
