@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gliderlabs/ssh"
@@ -12,6 +14,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/jumpserver-dev/sdk-go/service"
+	"github.com/jumpserver/koko/pkg/auth"
 	"github.com/jumpserver/koko/pkg/config"
 	"github.com/jumpserver/koko/pkg/handler"
 	"github.com/jumpserver/koko/pkg/logger"
@@ -28,8 +31,34 @@ const (
 )
 
 type Server struct {
-	Srv     *ssh.Server
-	Handler *handler.Server
+	Srv       *ssh.Server
+	Handler   *handler.Server
+	connCount int32
+}
+
+type countingListener struct {
+	net.Listener
+	connCount *int32
+}
+
+func (l *countingListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	atomic.AddInt32(l.connCount, 1)
+	return &countConn{Conn: conn, connCount: l.connCount}, nil
+}
+
+type countConn struct {
+	net.Conn
+	once      sync.Once
+	connCount *int32
+}
+
+func (c *countConn) Close() error {
+	c.once.Do(func() { atomic.AddInt32(c.connCount, -1) })
+	return c.Conn.Close()
 }
 
 func (s *Server) Start() {
@@ -43,17 +72,52 @@ func (s *Server) Start() {
 		return proxyproto.USE, nil
 	}
 	proxyListener := &proxyproto.Listener{Listener: ln, ConnPolicy: usePolicy}
-	if err = s.Srv.Serve(proxyListener); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
+	if err = s.Srv.Serve(&countingListener{Listener: proxyListener, connCount: &s.connCount}); err != nil && !errors.Is(err, ssh.ErrServerClosed) {
 		logger.Errorf("SSH server stopped unexpectedly: %s", err)
 	}
 }
 
 func (s *Server) Stop() {
-	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
+	drainTimeout := config.GetConf().SSHDrainTimeout
+	if drainTimeout <= 0 {
+		drainTimeout = 5
+	} else {
+		logger.Infof("SSH server draining for up to %d seconds; %d connections active",
+			drainTimeout, atomic.LoadInt32(&s.connCount))
+		logDrainingConns()
+	}
+	ctx, cancelFunc := context.WithTimeout(context.Background(), time.Duration(drainTimeout)*time.Second)
 	defer cancelFunc()
-	s.Handler.StopTerminalUIs()
+	if config.GetConf().SSHDrainTimeout <= 0 {
+		s.Handler.StopTerminalUIs()
+	}
+	stopReport := make(chan struct{})
+	if config.GetConf().SSHDrainTimeout > 0 {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					logger.Infof("SSH server draining: %d connections remaining", atomic.LoadInt32(&s.connCount))
+					logDrainingConns()
+				case <-stopReport:
+					return
+				}
+			}
+		}()
+	}
 	if err := s.Srv.Shutdown(ctx); err != nil {
 		logger.Errorf("Stop SSH server failed: %s", err)
+	}
+	close(stopReport)
+	s.Handler.StopTerminalUIs()
+}
+
+func logDrainingConns() {
+	for _, c := range auth.ActiveSSHConns() {
+		logger.Infof("SSH server draining: user=%s from=%s login=%s age=%s",
+			c.User, c.RemoteIP, c.LoginAt.Format(time.RFC3339), time.Since(c.LoginAt).Round(time.Second))
 	}
 }
 
@@ -106,7 +170,7 @@ func NewSSHServer(jmsService *service.JMService) *Server {
 			ChannelCancelTCPIPForward: sshHandler.HandleSSHRequest,
 		},
 	}
-	return &Server{srv, sshHandler}
+	return &Server{Srv: srv, Handler: sshHandler}
 }
 
 type localForwardChannelData struct {

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/LeeEirc/elfinder"
@@ -122,6 +123,21 @@ type Server struct {
 	apiClient   *service.JMService
 	lionMonitor graphicalMonitor
 	lionShare   graphicalShare
+	draining    int32
+	wsConns     int32
+}
+
+func (s *Server) DrainGuard() gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		if atomic.LoadInt32(&s.draining) != 0 {
+			ctx.String(http.StatusServiceUnavailable, "koko is draining")
+			ctx.Abort()
+			return
+		}
+		atomic.AddInt32(&s.wsConns, 1)
+		defer atomic.AddInt32(&s.wsConns, -1)
+		ctx.Next()
+	}
 }
 
 func (s *Server) Start() {
@@ -131,6 +147,16 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Stop() {
+	if drainTimeout := config.GetConf().SSHDrainTimeout; drainTimeout > 0 {
+		atomic.StoreInt32(&s.draining, 1)
+		deadline := time.Now().Add(time.Duration(drainTimeout) * time.Second)
+		logger.Infof("HTTP server draining for up to %d seconds; %d websocket requests active",
+			drainTimeout, atomic.LoadInt32(&s.wsConns))
+		for atomic.LoadInt32(&s.wsConns) > 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Second)
+		}
+		logger.Infof("HTTP server drain ended; %d websocket requests remain", atomic.LoadInt32(&s.wsConns))
+	}
 	ctx, cancelFunc := context.WithTimeout(context.TODO(), 10*time.Second)
 	defer cancelFunc()
 	if s.Srv != nil {

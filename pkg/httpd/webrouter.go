@@ -30,6 +30,7 @@ func createRouter(
 	kokoGroup := eng.Group("/koko")
 	kokoGroup.GET("/health/", webSrv.HealthStatusHandler)
 	wsGroup := kokoGroup.Group("/ws/")
+	wsGroup.Use(webSrv.DrainGuard())
 	{
 		wsGroup.Group("/terminal").Use(
 			auth.HTTPMiddleSessionAuth(jmsService)).GET("/", webSrv.ProcessTerminalWebsocket)

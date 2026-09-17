@@ -31,6 +31,7 @@ type Config struct {
 	WebProxyRecordingEnabled bool   `mapstructure:"WEB_PROXY_RECORDING_ENABLED"`
 	WebProxyFFmpegPath       string `mapstructure:"WEB_PROXY_FFMPEG_PATH"`
 	SSHTimeout               int    `mapstructure:"SSH_TIMEOUT"`
+	SSHDrainTimeout          int    `mapstructure:"SSH_DRAIN_TIMEOUT"`
 	HttpRequestTimeout       int    `mapstructure:"HTTP_REQUEST_TIMEOUT"`
 
 	LogLevel string `mapstructure:"LOG_LEVEL"`

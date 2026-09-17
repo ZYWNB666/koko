@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,8 +41,11 @@ func (k *Koko) Start() {
 }
 
 func (k *Koko) Stop() {
-	k.webSrv.Stop()
-	k.sshSrv.Stop()
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() { defer wait.Done(); k.webSrv.Stop() }()
+	go func() { defer wait.Done(); k.sshSrv.Stop() }()
+	wait.Wait()
 	if k.webProxy != nil {
 		k.webProxy.Stop()
 	}
