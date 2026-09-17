@@ -35,6 +35,26 @@ import (
 
 const ctxID = "ctxID"
 
+// isForbiddenPortForwarding prevents a tunnel from bypassing SSH auditing on
+// the selected asset's management port.
+func isForbiddenPortForwarding(destAddr string, tokenInfo *model.ConnectToken) (bool, string) {
+	_, portStr, err := net.SplitHostPort(destAddr)
+	if err != nil {
+		return false, ""
+	}
+	port, err := strconv.ParseUint(portStr, 10, 32)
+	if err != nil {
+		return false, ""
+	}
+	if tokenInfo.Asset.IsSupportProtocol(model.ProtocolSSH) {
+		sshPort := tokenInfo.Asset.ProtocolPort(model.ProtocolSSH)
+		if uint32(port) == uint32(sshPort) {
+			return true, fmt.Sprintf("SSH (port %d)", sshPort)
+		}
+	}
+	return false, ""
+}
+
 func (s *Server) PasswordAuth(ctx ssh.Context, password string) error {
 	ctx.SetValue(ctxID, ctx.SessionID())
 	tConfig := s.GetTerminalConfig()
@@ -148,12 +168,16 @@ func (s *Server) DirectTCPIPChannelHandler(ctx ssh.Context, newChan gossh.NewCha
 	}
 	reqId, ok := ctx.Value(ctxID).(string)
 	if !ok {
-		_ = newChan.Reject(gossh.Prohibited, "port forwarding is disabled")
+		s.handleNormalPortForwarding(ctx, newChan, destAddr)
 		return
 	}
 	vsReq := s.getVSCodeReq(reqId)
 	if vsReq == nil {
-		_ = newChan.Reject(gossh.Prohibited, "port forwarding is disabled")
+		s.handleNormalPortForwarding(ctx, newChan, destAddr)
+		return
+	}
+	if forbidden, protocol := isForbiddenPortForwarding(destAddr, &model.ConnectToken{Asset: vsReq.asset}); forbidden {
+		_ = newChan.Reject(gossh.Prohibited, fmt.Sprintf("port forwarding to %s is forbidden", protocol))
 		return
 	}
 	dConn, err := vsReq.client.Dial("tcp", destAddr)
@@ -405,10 +429,17 @@ func (s *Server) proxyTokenInfo(sess ssh.Session, tokenInfo *model.ConnectToken)
 	// Authentication has completed (or an existing client was reused), so the
 	// ephemeral private key is no longer needed for this connection.
 	tokenInfo.ClearSSHCertificateCredential()
-	//defer sshClient.Close()
+	if len(sess.Command()) != 0 {
+		// Exec sessions have no VSCode request and can finish before the SSH
+		// connection closes. Release our cache reference as soon as they finish.
+		defer releaseForwardSSHClient(sshClient)
+		s.proxyAssetCommand(sess, sshClient, tokenInfo)
+		return
+	}
 	vsReq := &vscodeReq{
 		reqId:      ctxId,
 		user:       &tokenInfo.User,
+		asset:      tokenInfo.Asset,
 		client:     sshClient,
 		expireInfo: tokenInfo.ExpireAt,
 		forwards:   make(map[string]net.Listener),
@@ -425,11 +456,6 @@ func (s *Server) proxyTokenInfo(sess ssh.Session, tokenInfo *model.ConnectToken)
 		}
 		logger.Infof("User %s end vscode request %s", vsReq.user, sshClient)
 	}()
-	if len(sess.Command()) != 0 {
-		s.proxyAssetCommand(sess, sshClient, tokenInfo)
-		return
-	}
-
 	if !config.GetConf().EnableVscodeSupport {
 		utils.IgnoreErrWriteString(sess, "No support vscode like requested.\n")
 		return

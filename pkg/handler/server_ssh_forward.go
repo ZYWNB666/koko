@@ -116,6 +116,7 @@ func (s *Server) HandleSSHRequest(ctx ssh.Context, srv *ssh.Server, req *gossh.R
 			vsReq = &vscodeReq{
 				reqId:    reqId,
 				user:     user,
+				asset:    tokenInfo.Asset,
 				client:   sshClient,
 				forwards: make(map[string]net.Listener),
 			}

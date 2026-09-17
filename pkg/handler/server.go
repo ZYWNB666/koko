@@ -86,6 +86,7 @@ func (s *Server) deleteVSCodeReq(vsReq *vscodeReq) {
 type vscodeReq struct {
 	reqId  string
 	user   *model.User
+	asset  model.Asset
 	client *srvconn.SSHClient
 
 	expireInfo model.ExpireInfo
