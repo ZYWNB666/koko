@@ -3,7 +3,6 @@ package httpd
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -24,6 +23,11 @@ type chat struct {
 	conversations sync.Map
 
 	term *model.TerminalConfig
+
+	// activeConvMu 保护 activeConv: 当前正在流式输出的会话 id,
+	// 用于前端在首帧返回前(尚无会话 id)点停止时定位会话
+	activeConvMu sync.Mutex
+	activeConv   string
 }
 
 func (h *chat) Name() string {
@@ -57,7 +61,8 @@ func (h *chat) getOrCreateConversation(msg *Message) (*AIConversation, error) {
 		if v, ok := h.conversations.Load(msg.Id); ok {
 			return v.(*AIConversation), nil
 		}
-		return nil, fmt.Errorf("conversation %s not found", msg.Id)
+		// 会话不存在(如 ws 重连后旧 id 失效/超时被清理):
+		// 降级新建会话而非报错, 否则前端会一直等不到回复
 	}
 
 	conv := &AIConversation{
@@ -70,6 +75,17 @@ func (h *chat) getOrCreateConversation(msg *Message) (*AIConversation, error) {
 }
 
 func (h *chat) runChat(conv *AIConversation) {
+	h.activeConvMu.Lock()
+	h.activeConv = conv.Id
+	h.activeConvMu.Unlock()
+	defer func() {
+		h.activeConvMu.Lock()
+		if h.activeConv == conv.Id {
+			h.activeConv = ""
+		}
+		h.activeConvMu.Unlock()
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -125,12 +141,16 @@ func (h *chat) streamResponses(
 	for {
 		select {
 		case <-ctx.Done():
+			// 关闭底层流让 Chat goroutine 的 RecvRaw 报错退出,
+			// 否则它会永久阻塞在无缓冲 AnswerCh 上(goroutine+连接泄漏)
+			conn.Close()
 			h.sendError(conv.Id, "chat timeout")
 			return
 		case ans := <-conn.AnswerCh:
 			h.sendMessage(conv.Id, msgID, ans, "message", conn.IsReasoning)
 		case ans := <-conn.DoneCh:
-			h.sendMessage(conv.Id, msgID, ans, "finish", false)
+			// interrupt 时 content 可能还是思考内容, 传真实 IsReasoning
+			h.sendMessage(conv.Id, msgID, ans, "finish", conn.IsReasoning)
 			h.finalizeConversation(conv, ans)
 			return
 		}
@@ -179,6 +199,15 @@ func (h *chat) endConversation(convID, typ, msg string) {
 }
 
 func (h *chat) interrupt(convID string) {
+	if convID == "" {
+		// 首帧返回前前端还没有会话 id, 中断当前活跃会话
+		h.activeConvMu.Lock()
+		convID = h.activeConv
+		h.activeConvMu.Unlock()
+	}
+	if convID == "" {
+		return
+	}
 	if v, ok := h.conversations.Load(convID); ok {
 		v.(*AIConversation).InterruptCurrentChat = true
 	}

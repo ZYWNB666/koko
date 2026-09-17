@@ -85,6 +85,17 @@ type OpenAIConn struct {
 	AnswerCh    chan string
 	DoneCh      chan string
 	Type        string
+
+	// stream 供 Close() 在外部终止时关闭底层连接,
+	// 让阻塞中的 Chat goroutine 退出
+	stream *openai.ChatCompletionStream
+}
+
+// Close 关闭底层流; RecvRaw 会随之报错, Chat goroutine 得以退出
+func (conn *OpenAIConn) Close() {
+	if conn.stream != nil {
+		_ = conn.stream.Close()
+	}
 }
 
 func (conn *OpenAIConn) Chat(interruptCurrentChat *bool) {
@@ -120,6 +131,7 @@ func (conn *OpenAIConn) Chat(interruptCurrentChat *bool) {
 		conn.DoneCh <- err.Error()
 		return
 	}
+	conn.stream = stream
 	defer func(stream *openai.ChatCompletionStream) {
 		err := stream.Close()
 		if err != nil {
@@ -168,9 +180,10 @@ func (conn *OpenAIConn) Chat(interruptCurrentChat *bool) {
 		} else {
 			newContent = delta.Content
 			if conn.IsReasoning {
+				// 思考→正文切换帧: 清空之前累加的思考内容,
+				// 但不丢弃本帧的正文首字(原 continue 会吞掉首 token)
 				conn.IsReasoning = false
 				content = ""
-				continue
 			}
 		}
 
