@@ -29,8 +29,12 @@ USER root
 
 ARG DEPENDENCIES="                    \
         bash-completion               \
+        curl                          \
+        iproute2                      \
+        jq                            \
         less                          \
         openssl                       \
+        procps                        \
         redis-tools                   \
         xz-utils                      \
         ca-certificates"
