@@ -522,6 +522,11 @@ func (s *Server) proxyTokenInfo(sess ssh.Session, tokenInfo *model.ConnectToken)
 	}()
 	if len(sess.Command()) != 0 {
 		s.proxyAssetCommand(sess, sshClient, tokenInfo)
+		// 命令已执行完、输出已回传, 立即释放连接链(网关+资产两条 SSH 连接)。
+		// 不能只依赖上面的 goroutine 等 sess.Context().Done(): 约半数 exec
+		// session 的 context 不会触发, 连接链永久泄漏导致 OOM(46h 泄漏 ~8000 条)。
+		// Close 幂等, goroutine 里随后的 Close 无害
+		_ = sshClient.Close()
 		return
 	}
 
