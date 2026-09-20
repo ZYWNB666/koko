@@ -3,6 +3,7 @@ package httpd
 import (
 	"time"
 
+	"github.com/jumpserver/koko/pkg/config"
 	"github.com/jumpserver/koko/pkg/exchange"
 
 	"github.com/jumpserver-dev/sdk-go/model"
@@ -139,9 +140,19 @@ const (
 )
 
 const (
-	maxReadTimeout  = 5 * time.Minute
 	maxWriteTimeOut = 5 * time.Minute
 )
+
+// wsReadTimeout 是用户 WebSocket(网页终端/web sftp)的读空闲超时。
+// 前端 luna 每 25s 发应用层 PING, 前台会话不会触达; 只有标签页被浏览器冻结、
+// 休眠或断网时才会静默超过该值, 超时连接被回收后, 用户回到页面看到的就是
+// 1006 "未收到 Koko 结束通知"。默认 30 分钟, 可用 WS_READ_TIMEOUT(秒)覆盖。
+func wsReadTimeout() time.Duration {
+	if v := config.GetConf().WsReadTimeout; v > 0 {
+		return time.Duration(v) * time.Second
+	}
+	return 30 * time.Minute
+}
 
 const (
 	TTYName       = "terminal"

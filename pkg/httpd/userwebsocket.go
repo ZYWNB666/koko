@@ -293,7 +293,7 @@ func (userCon *UserWebsocket) sendConnectMessage() {
 
 func (userCon *UserWebsocket) readMessageLoop() error {
 	for {
-		p, opCode, err := userCon.conn.ReadData(maxReadTimeout)
+		p, opCode, err := userCon.conn.ReadData(wsReadTimeout())
 		if err != nil {
 			return err
 		}

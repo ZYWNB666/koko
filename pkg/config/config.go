@@ -33,6 +33,7 @@ type Config struct {
 	SSHTimeout               int    `mapstructure:"SSH_TIMEOUT"`
 	SSHDrainTimeout          int    `mapstructure:"SSH_DRAIN_TIMEOUT"`
 	HttpRequestTimeout       int    `mapstructure:"HTTP_REQUEST_TIMEOUT"`
+	WsReadTimeout            int    `mapstructure:"WS_READ_TIMEOUT"`
 
 	LogLevel string `mapstructure:"LOG_LEVEL"`
 
